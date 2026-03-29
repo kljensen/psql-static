@@ -7,22 +7,23 @@ PostgreSQL installation at all (HPC clusters, containers, etc.).
 
 ## Download
 
-Grab the latest binary for your PostgreSQL version and architecture from the
-[releases page](https://github.com/kljensen/psql-static/releases/tag/latest):
+There is one release per PostgreSQL major version — `pg15`, `pg16`, `pg17`, `pg18` —
+each always tracking the latest patch.
 
 ```bash
 # PostgreSQL 16, x86_64 (Intel/AMD)
-curl -fsSL https://github.com/kljensen/psql-static/releases/download/latest/psql-16.13-linux-x86_64 \
+curl -fsSL https://github.com/kljensen/psql-static/releases/download/pg16/psql-16.13-linux-x86_64 \
   -o psql && chmod +x psql && ./psql --version
 
 # PostgreSQL 16, aarch64 (ARM64 / Apple Silicon Linux / Raspberry Pi)
-curl -fsSL https://github.com/kljensen/psql-static/releases/download/latest/psql-16.13-linux-aarch64 \
+curl -fsSL https://github.com/kljensen/psql-static/releases/download/pg16/psql-16.13-linux-aarch64 \
   -o psql && chmod +x psql && ./psql --version
 ```
 
-> **Note:** The exact patch number (e.g. `16.13`) changes as PostgreSQL releases
-> updates.  Check the [latest release](https://github.com/kljensen/psql-static/releases/tag/latest)
-> for current filenames.
+> **Note:** The patch number in the filename (e.g. `16.13`) advances automatically
+> when PostgreSQL ships a new patch release.  Check the
+> [pg16 release](https://github.com/kljensen/psql-static/releases/tag/pg16)
+> for the current filename.
 
 ## Supported versions & architectures
 
@@ -89,8 +90,8 @@ The [release workflow](.github/workflows/release.yml):
   major (so no manual version bumps needed)
 - Runs a **matrix** of `(pg_version × arch)` jobs in parallel using GitHub's
   native runners (`ubuntu-latest` for x86_64, `ubuntu-24.04-arm` for aarch64)
-- Keeps a rolling **`latest`** release that always has current binaries, plus
-  a permanent release for each pushed tag
+- Publishes **one release per major** (`pg15`, `pg16`, `pg17`, `pg18`), each
+  updated in-place when a new patch ships
 
 ## License
 
