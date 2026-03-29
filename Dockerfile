@@ -8,6 +8,7 @@ RUN apk add --no-cache \
     wget \
     bison \
     flex \
+    perl \
     openssl-dev \
     openssl-libs-static \
     zlib-dev \
