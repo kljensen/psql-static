@@ -48,20 +48,30 @@ RUN make -j$(nproc) -C src/common \
  && make -j$(nproc) -C src/fe_utils \
  && make -j$(nproc) -C src/bin/psql
 
-# Static re-link with explicit library order.
-# readline.a requires ncurses (tputs/tgetnum etc.) which configure omits from
-# LIBS; ncurses must follow readline for the static linker to resolve symbols.
-RUN cd src/bin/psql && gcc \
-    command.o common.o copy.o crosstabview.o describe.o help.o input.o \
-    large_obj.o mainloop.o prompt.o psqlscanslash.o sql_help.o startup.o \
-    stringutils.o tab-complete.o variables.o \
+# Static re-link.  Two subtleties vs a plain LDFLAGS=-static approach:
+#
+#  1. Object discovery: `ls *.o` is used instead of a hardcoded list so that
+#     new source files added in PG17+ (e.g. unicode helpers) are included.
+#
+#  2. --start-group/--end-group: pg libraries have circular symbol references
+#     (libpq ↔ libpgcommon ↔ libpgport); the group flag makes ld rescan until
+#     all symbols are resolved regardless of order.
+#
+#  3. -lncurses after -lreadline: readline.a references tputs/tgetnum/etc.
+#     which configure omits from LIBS (they're found dynamically at configure
+#     time); for static linking they must be listed explicitly.
+RUN cd src/bin/psql \
+ && OBJS=$(ls *.o | tr '\n' ' ') \
+ && gcc $OBJS \
     -static \
-    -L../../fe_utils         -lpgfeutils \
-    -L../../interfaces/libpq -lpq \
-    -L../../common           -lpgcommon \
-    -L../../port             -lpgport \
-    -lssl -lcrypto -lz \
-    -lreadline -lncurses \
+    -Wl,--start-group \
+      -L../../fe_utils         -lpgfeutils \
+      -L../../interfaces/libpq -lpq \
+      -L../../common           -lpgcommon \
+      -L../../port             -lpgport \
+      -lssl -lcrypto -lz \
+      -lreadline -lncurses \
+    -Wl,--end-group \
     -lm \
     -o psql \
  && strip psql
