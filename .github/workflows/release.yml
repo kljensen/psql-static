@@ -1,0 +1,225 @@
+name: Build & Release
+
+# Builds a fully static, musl-linked psql binary for each supported
+# PostgreSQL major version × architecture.  Triggered:
+#  - weekly (picks up new patch releases automatically)
+#  - manually via workflow_dispatch
+#  - on push to main (CI smoke-test; no release created)
+#  - on version tag push (v*) — creates a permanent versioned release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  schedule:
+    - cron: '0 6 * * 1'   # Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create/update releases
+
+jobs:
+
+  # ── 1. Determine the latest patch release for each supported PG major ──────
+  versions:
+    name: Determine PostgreSQL versions
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - name: Fetch latest patch versions from postgresql.org
+        id: set
+        run: |
+          python3 - <<'EOF'
+          import urllib.request, re, json, os
+
+          MAJORS = [15, 16, 17, 18]
+          html = urllib.request.urlopen(
+              'https://ftp.postgresql.org/pub/source/'
+          ).read().decode()
+
+          includes = []
+          for major in MAJORS:
+              patches = re.findall(rf'v({major}\.\d+)/', html)
+              if not patches:
+                  continue
+              latest = max(patches, key=lambda v: int(v.split('.')[1]))
+              for runner, platform, arch in [
+                  ('ubuntu-latest',    'linux/amd64', 'x86_64'),
+                  ('ubuntu-24.04-arm', 'linux/arm64', 'aarch64'),
+              ]:
+                  includes.append({
+                      'pg_version': latest,
+                      'pg_major':   str(major),
+                      'runner':     runner,
+                      'platform':   platform,
+                      'arch':       arch,
+                  })
+
+          matrix = json.dumps({'include': includes})
+          print(f'Resolved matrix:\n{json.dumps(includes, indent=2)}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+              fh.write(f'matrix={matrix}\n')
+          EOF
+
+  # ── 2. Build — one job per (pg_version × arch) ────────────────────────────
+  build:
+    name: psql ${{ matrix.pg_version }} / ${{ matrix.arch }}
+    needs: versions
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix: ${{ fromJSON(needs.versions.outputs.matrix) }}
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build static psql
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: PG_VERSION=${{ matrix.pg_version }}
+          outputs: type=local,dest=./output
+          # Scope cache by major+arch so different versions share warm layers
+          cache-from: type=gha,scope=pg${{ matrix.pg_major }}-${{ matrix.arch }}
+          cache-to:   type=gha,scope=pg${{ matrix.pg_major }}-${{ matrix.arch }},mode=max
+
+      - name: Name the binary
+        run: mv output/psql psql-${{ matrix.pg_version }}-linux-${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: psql-${{ matrix.pg_version }}-linux-${{ matrix.arch }}
+          path: psql-${{ matrix.pg_version }}-linux-${{ matrix.arch }}
+          retention-days: 1
+
+  # ── 3. Release ────────────────────────────────────────────────────────────
+  release:
+    name: Publish release
+    needs: [versions, build]
+    runs-on: ubuntu-latest
+    # Skip release on plain branch pushes; create one for tags and scheduled/manual runs
+    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh artifacts/
+
+      - name: Set release metadata
+        id: meta
+        run: |
+          echo "date=$(date -u +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+          # Use the pushed tag if this is a tag push, otherwise use "latest"
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          else
+            echo "tag=latest" >> $GITHUB_OUTPUT
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build release notes
+        id: notes
+        run: |
+          python3 - <<'EOF'
+          import json, os
+
+          matrix_json = '${{ needs.versions.outputs.matrix }}'
+          includes = json.loads(matrix_json)['include']
+
+          # Deduplicate: one row per (pg_version, arch) pair
+          seen = set()
+          rows = []
+          for item in includes:
+              key = (item['pg_version'], item['arch'])
+              if key not in seen:
+                  seen.add(key)
+                  rows.append(item)
+
+          # Group by pg_major for display
+          from collections import defaultdict
+          by_major = defaultdict(list)
+          for r in rows:
+              by_major[r['pg_major']].append(r)
+
+          lines = [
+              "Static, musl-linked `psql` binaries built from official PostgreSQL source.",
+              "No shared library dependencies — drop them anywhere and run.",
+              "",
+              "## Included versions",
+              "",
+          ]
+          for major in sorted(by_major.keys()):
+              items = by_major[major]
+              version = items[0]['pg_version']
+              arches  = ', '.join(sorted(set(i['arch'] for i in items)))
+              lines.append(f"| PostgreSQL {major} | `{version}` | {arches} |")
+
+          if not any('|' in l for l in lines):
+              lines.append("_(versions unavailable — see job logs)_")
+
+          # Prepend table header
+          for i, l in enumerate(lines):
+              if l.startswith('|'):
+                  lines.insert(i, "| Major | Version | Architectures |")
+                  lines.insert(i+1, "|-------|---------|---------------|")
+                  break
+
+          lines += [
+              "",
+              "## Download",
+              "",
+              "```bash",
+              "# Example: PostgreSQL 16, x86_64",
+              "curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ steps.meta.outputs.tag }}/psql-16.13-linux-x86_64 -o psql",
+              "chmod +x psql",
+              "./psql --version",
+              "```",
+              "",
+              "## Build",
+              "",
+              "```bash",
+              "docker buildx build --platform linux/amd64 --build-arg PG_VERSION=16.13 \\",
+              "  --output type=local,dest=./out .",
+              "```",
+          ]
+
+          body = '\n'.join(lines)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+              # Use a heredoc-style multiline output
+              fh.write('body<<RELEASE_BODY_EOF\n')
+              fh.write(body + '\n')
+              fh.write('RELEASE_BODY_EOF\n')
+          print(body)
+          EOF
+
+      - name: Delete existing latest tag/release (rolling update)
+        if: steps.meta.outputs.tag == 'latest'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --yes 2>/dev/null || true
+          git push origin :refs/tags/latest 2>/dev/null || true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.meta.outputs.tag }}" \
+            --title "${{ steps.meta.outputs.tag == 'latest' && format('Latest builds ({0})', steps.meta.outputs.date) || format('Release {0}', steps.meta.outputs.tag) }}" \
+            --notes "${{ steps.notes.outputs.body }}" \
+            ${{ steps.meta.outputs.prerelease == 'true' && '--prerelease' || '--latest' }} \
+            artifacts/*
