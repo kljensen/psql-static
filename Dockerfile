@@ -1,10 +1,13 @@
 FROM alpine:3.21 AS builder
 
 # Static build dependencies — includes both the .so and .a variants
+# bison is required by PostgreSQL 17+ configure even from release tarballs
 RUN apk add --no-cache \
     build-base \
     linux-headers \
     wget \
+    bison \
+    flex \
     openssl-dev \
     openssl-libs-static \
     zlib-dev \
@@ -31,7 +34,6 @@ RUN ./configure \
     --without-icu \
     --without-ldap \
     --without-gssapi \
-    --without-krb5 \
     --without-pam \
     --without-perl \
     --without-python \
