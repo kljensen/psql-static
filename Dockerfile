@@ -67,8 +67,8 @@ RUN cd src/bin/psql \
     -Wl,--start-group \
       -L../../fe_utils         -lpgfeutils \
       -L../../interfaces/libpq -lpq \
-      -L../../common           -lpgcommon_shlib \
-      -L../../port             -lpgport_shlib \
+      -L../../common           -lpgcommon_shlib -lpgcommon \
+      -L../../port             -lpgport_shlib   -lpgport \
       -lssl -lcrypto -lz \
       -lreadline -lncurses \
     -Wl,--end-group \
