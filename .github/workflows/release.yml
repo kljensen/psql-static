@@ -114,6 +114,7 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+          pattern: 'psql-*'   # exclude Docker build-summary .dockerbuild files
 
       - name: List artifacts
         run: ls -lh artifacts/
